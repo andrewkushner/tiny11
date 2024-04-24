@@ -1,3 +1,7 @@
+# Enable debugging
+#Set-PSDebug -Trace 1
+
+# Check if PowerShell execution is restricted
 if ((Get-ExecutionPolicy) -eq 'Restricted') {
     Write-Host "Your current PowerShell Execution Policy is set to Restricted, which prevents scripts from running. Do you want to change it to RemoteSigned? (yes/no)"
     $response = Read-Host
@@ -8,26 +12,29 @@ if ((Get-ExecutionPolicy) -eq 'Restricted') {
         exit
     }
 }
+
+# Check and run the script as admin if required
 $myWindowsID=[System.Security.Principal.WindowsIdentity]::GetCurrent()
 $myWindowsPrincipal=new-object System.Security.Principal.WindowsPrincipal($myWindowsID)
 $adminRole=[System.Security.Principal.WindowsBuiltInRole]::Administrator
-if ($myWindowsPrincipal.IsInRole($adminRole))
+if (! $myWindowsPrincipal.IsInRole($adminRole))
 {
-    $Host.UI.RawUI.WindowTitle = "tiny11 builder"
-    Clear-Host
-}
-else
-{
+    Write-Host "Executing Tiny11 image creator as admin in new window, you can close this one."
     $newProcess = new-object System.Diagnostics.ProcessStartInfo "PowerShell";
     $newProcess.Arguments = $myInvocation.MyCommand.Definition;
     $newProcess.Verb = "runas";
     [System.Diagnostics.Process]::Start($newProcess);
     exit
 }
-Write-Host "Welcome to the tiny11 image creator!"
-Start-Sleep -Seconds 3
+
+# Start the transcript and prepare the window
+Start-Transcript -Path "$PSScriptRoot\tiny11.log" -UseMinimalHeader
+$Host.UI.RawUI.WindowTitle = "Tiny11 image creator"
 Clear-Host
+Write-Host "Welcome to the Tiny11 image creator!"
+
 $mainOSDrive = $env:SystemDrive
+$hostArchitecture = $Env:PROCESSOR_ARCHITECTURE
 
 $DriveLetter = Read-Host "Please enter the drive letter for the Windows 11 image"
 $DriveLetter = $DriveLetter + ":"
@@ -43,7 +50,7 @@ Write-Host "Copying Windows image..."
 Copy-Item -Path "$DriveLetter\*" -Destination "$mainOSDrive\tiny11" -Recurse -Force
 Write-Host "Copy complete!"
 Start-Sleep -Seconds 2
-Clear-Host
+
 Write-Host "Getting image information:"
 &  'dism' "/Get-WimInfo" "/wimfile:$mainOSDrive\tiny11\sources\install.wim"
 $index = Read-Host "Please enter the image index"
@@ -83,7 +90,6 @@ foreach ($line in $lines) {
 if (-not $architecture) {
     Write-Host "Architecture information not found."
 }
-
 
 Write-Host "Mounting complete! Performing removal of applications..."
 
@@ -140,7 +146,7 @@ Write-Host "Removing OneDrive:"
 Remove-Item -Path "$mainOSDrive\scratchdir\Windows\System32\OneDriveSetup.exe" -Force
 Write-Host "Removal complete!"
 Start-Sleep -Seconds 2
-Clear-Host
+
 Write-Host "Loading registry..."
 reg load HKLM\zCOMPONENTS $mainOSDrive\scratchdir\Windows\System32\config\COMPONENTS
 reg load HKLM\zDEFAULT $mainOSDrive\scratchdir\Windows\System32\config\default
@@ -218,7 +224,7 @@ Remove-Item -Path "$mainOSDrive\tiny11\sources\install.wim" -Force
 Rename-Item -Path "$mainOSDrive\tiny11\sources\install2.wim" -NewName "install.wim"
 Write-Host "Windows image completed. Continuing with boot.wim."
 Start-Sleep -Seconds 2
-Clear-Host
+
 Write-Host "Mounting boot image:"
 $wimFilePath = "$($env:SystemDrive)\tiny11\sources\boot.wim"
 & takeown "/F" $wimFilePath
@@ -253,15 +259,30 @@ reg unload HKLM\zSOFTWARE
 reg unload HKLM\zSYSTEM
 Write-Host "Unmounting image..."
 & 'dism' '/unmount-image' "/mountdir:$mainOSDrive\scratchdir" '/commit'
-Clear-Host
+
 Write-Host "The tiny11 image is now completed. Proceeding with the making of the ISO..."
 Write-Host "Copying unattended file for bypassing MS account on OOBE..."
 Copy-Item -Path "$PSScriptRoot\autounattend.xml" -Destination "$mainOSDrive\tiny11\autounattend.xml" -Force
 Write-Host "Creating ISO image..."
-& "$PSScriptRoot\oscdimg.exe" '-m' '-o' '-u2' '-udfver102' "-bootdata:2#p0,e,b$mainOSDrive\tiny11\boot\etfsboot.com#pEF,e,b$mainOSDrive\tiny11\efi\microsoft\boot\efisys.bin" "$mainOSDrive\tiny11" "$PSScriptRoot\tiny11.iso"
+
+$ADKDepTools = "C:\Program Files (x86)\Windows Kits\10\Assessment and Deployment Kit\Deployment Tools\$hostarchitecture\Oscdimg"
+if ([System.IO.Directory]::Exists($ADKDepTools)) {
+    Write-Host "Will be using oscdimg.exe from system ADK."
+    $OSCDIMG = "$ADKDepTools\oscdimg.exe"
+} else {
+    Write-Host "Will be using bundled oscdimg.exe."
+    $OSCDIMG = "$PSScriptRoot\oscdimg.exe"
+}
+& "$OSCDIMG" '-m' '-o' '-u2' '-udfver102' "-bootdata:2#p0,e,b$mainOSDrive\tiny11\boot\etfsboot.com#pEF,e,b$mainOSDrive\tiny11\efi\microsoft\boot\efisys.bin" "$mainOSDrive\tiny11" "$PSScriptRoot\tiny11.iso"
+
+# Finishing up
 Write-Host "Creation completed! Press any key to exit the script..."
 Read-Host "Press Enter to continue"
 Write-Host "Performing Cleanup..."
 Remove-Item -Path "$mainOSDrive\tiny11" -Recurse -Force
 Remove-Item -Path "$mainOSDrive\scratchdir" -Recurse -Force
+
+# Stop the transcript
+Stop-Transcript
+
 exit
